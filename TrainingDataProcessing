@@ -1,0 +1,263 @@
+'''
+This version now adds extra RGB indices
+'''
+
+import rasterio
+from rasterio.mask import mask
+from skimage import color
+from skimage.feature import graycomatrix
+from skimage.feature import graycoprops
+import geopandas as gpd
+import numpy as np
+import os
+os.environ['PROJ_LIB'] = r"C:\Users\danph\anaconda3\envs\dp\Library\share\proj"
+os.environ['GDAL_DATA'] = r"C:\Users\danph\anaconda3\envs\dp\Library\share"
+
+# Function to calculate average RGB values for a given polygon
+def calculate_average_rgb_for_polygon(rasterPath, geometry):
+    # Open raster
+    raster = rasterio.open(rasterPath)
+    
+    # Convert the geometry to GeoJSON format
+    geoms = [geometry.__geo_interface__]
+
+    # Mask raster with polygon
+    out_image, _ = mask(raster, geoms, crop=True)
+
+    # Calculate average RGB values
+    avg_r = np.mean(out_image[0])
+    avg_g = np.mean(out_image[1])
+    avg_b = np.mean(out_image[2])
+    
+    # Calculate average RGB indice values
+    avg_GRRI = avg_g / avg_r
+    avg_GBRI = avg_g / avg_r
+    avg_RBRI = avg_r / avg_b
+    avg_NGRDI = (avg_g - avg_r)/(avg_g + avg_r)
+    avg_NGBDI = (avg_g - avg_b)/(avg_g + avg_b)
+    avg_NRBDI = (avg_r - avg_b)/(avg_r + avg_b)
+    avg_MGRVI = (avg_g**2 - avg_r**2) / (avg_g**2 + avg_r**2)
+    avg_RGBVI = (avg_g**2 - (avg_r * avg_b)) / (avg_g**2 + (avg_r * avg_b))
+    avg_GLI = (2 * avg_g - avg_r - avg_b) / (2 * avg_g + avg_r + avg_b)
+    avg_VARI = (avg_g - avg_r) / (avg_g + avg_r - avg_b)
+    avg_VEG = (avg_g)/((avg_r**0.667) * (avg_b**0.333))
+    avg_Intensity = avg_r + avg_g + avg_b 
+    avg_Hue = (avg_g - avg_b) / (avg_Intensity - 3*avg_b)
+    avg_Saturation = (avg_Intensity - 3*avg_b) / (avg_Intensity)
+
+    return avg_r, avg_g, avg_b, avg_GRRI, avg_GBRI, avg_RBRI, avg_NGRDI, avg_NGBDI, avg_NRBDI, avg_MGRVI, avg_RGBVI, avg_GLI, avg_VARI, avg_VEG, avg_Intensity, avg_Hue, avg_Saturation
+
+# Function to read raster and return greyscale image, red band, green band, blue band
+def read_raster(rasterPath):
+    # Read the raster
+    with rasterio.open(rasterPath) as src:
+        # Read all R,G,B bands 
+        R = src.read(1)
+        G = src.read(2)
+        B = src.read(3)
+
+        # Convert to greyscale - CRT weighting
+        grey_image = 0.2125*R + 0.7154*G + 0.0721*B
+
+        # Create a new DatasetReader with the greyscale data
+        greyscale_src = rasterio.open(
+            'greyscale.tif',
+            'w',
+            driver='GTiff',
+            height=src.height,
+            width=src.width,
+            count=1,  # Single band for greyscale
+            dtype=rasterio.uint8,  
+            crs=src.crs,
+            transform=src.transform
+        )
+
+        # Write the greyscale data
+        greyscale_src.write(grey_image, 1)
+        
+        # Close the writer
+        greyscale_src.close()
+        
+        # Reopen the file in read mode to get a DatasetReader
+        greyscale_src = rasterio.open('greyscale.tif')
+        
+        # Create DatasetReader for R, G, B bands
+        R_src = rasterio.open(
+            'R_band.tif',
+            'w',
+            driver='GTiff',
+            height=src.height,
+            width=src.width,
+            count=1,
+            dtype=rasterio.uint8,
+            crs=src.crs,
+            transform=src.transform
+        )
+        R_src.write(R, 1)
+        R_src.close()
+        R_src = rasterio.open('R_band.tif')
+        
+        G_src = rasterio.open(
+            'G_band.tif',
+            'w',
+            driver='GTiff',
+            height=src.height,
+            width=src.width,
+            count=1,
+            dtype=rasterio.uint8,
+            crs=src.crs,
+            transform=src.transform
+        )
+        G_src.write(G, 1)
+        G_src.close()
+        G_src = rasterio.open('G_band.tif')
+        
+        B_src = rasterio.open(
+            'B_band.tif',
+            'w',
+            driver='GTiff',
+            height=src.height,
+            width=src.width,
+            count=1,
+            dtype=rasterio.uint8,
+            crs=src.crs,
+            transform=src.transform
+        )
+        B_src.write(B, 1)
+        B_src.close()
+        B_src = rasterio.open('B_band.tif')
+
+    return R_src, G_src, B_src, greyscale_src
+
+# Function to calculate GLCM features for a given polygon
+def calculate_glcm_for_polygon(raster, geometry):
+    # Convert the geometry to GeoJSON format
+    geoms = [geometry.__geo_interface__]
+
+    # Mask raster with polygon
+    out_image, _ = mask(raster, geoms, crop=True)
+    
+    # Set the distances and angles for GLCM calculation
+    distances = [1]
+    angles = [0]
+
+    # Calculate GLCM
+    glcm = graycomatrix(out_image[0], distances=distances, angles=angles, symmetric=True, normed=True)
+
+    # Extract GLCM features
+    contrast = graycoprops(glcm, prop='contrast').ravel()[0]
+    dissimilarity = graycoprops(glcm, prop='dissimilarity').ravel()[0]
+    homogeneity = graycoprops(glcm, prop='homogeneity').ravel()[0]
+    energy = graycoprops(glcm, prop='energy').ravel()[0]
+    correlation = graycoprops(glcm, prop='correlation').ravel()[0]
+    ASM = graycoprops(glcm, prop='ASM').ravel()[0]
+    
+
+    return contrast, dissimilarity, homogeneity, energy, correlation, ASM
+
+
+# Function to buffer point geometries in a GeoDataFrame
+def buffer_points(gdf, buffer_distance):
+    # Buffer each point geometry individually
+    gdf['geometry'] = gdf.geometry.apply(lambda point: point.buffer(buffer_distance) if point.geom_type == 'Point' else point)
+    return gdf
+
+
+######################### INPUT STUFF HERE ###############################
+
+# Paths to raster and shapefile
+raster_path = r"C:\Users\danph\OneDrive\Desktop\GEOM2073-Dissertation\Data\Glengowie\Aerial_photography\Glengowie_2021dec13_air_vis_10cm_epsg7855.tif"
+shapefile_path = r"C:\Users\danph\OneDrive\Desktop\GEOM2073-Dissertation\Data\Glengowie\Shapefiles\2021_Glengowie_Spring_RapidPlotAssessments.shp"
+
+# Convert raster to greyscale
+red_raster, green_raster, blue_raster, greyscale_raster = read_raster(raster_path)
+raster_stack = [greyscale_raster, red_raster, green_raster, blue_raster]
+
+# Read shapefile and buffer point geometry
+gdf = gpd.read_file(shapefile_path)
+buffer_distance = 10  # Buffer distance in meters
+gdf = buffer_points(gdf, buffer_distance)
+
+# Add new columns to the shapefile for GLCM features
+texture_features = ['cont', 'dissim', 'homog', 'energy', 'ASM', 'correl']
+channels = ['R', 'G', 'B', 'P']         # 4 channels, p -> panchromatic
+
+# Loop through texture features and channels to create 20 new columns
+for f in texture_features:
+    for c in channels:
+        gdf[f + '_' + c] = np.nan
+
+# Add empty R,G,B & RGB index columns avg_GRRI, avg_GBRI, avg_RBRI, avg_NGRDI, avg_NGBDI, avg_NRBDI, avg_MGRVI, avg_RGBVI, avg_GLI, avg_VARI, avg_VEG, avg_Intensity, avg_Hue, avg_Saturation
+gdf['Red avg'] = np.nan
+gdf['Green avg'] = np.nan
+gdf['Blue avg'] = np.nan
+gdf['GRRI'] = np.nan
+gdf['GBRI'] = np.nan
+gdf['RBRI'] = np.nan
+gdf['NGRDI'] = np.nan
+gdf['NGBDI'] = np.nan
+gdf['NRBDI'] = np.nan
+gdf['MGRVI'] = np.nan
+gdf['RGBVI'] = np.nan
+gdf['GLI'] = np.nan
+gdf['VARI'] = np.nan
+gdf['VEG'] = np.nan
+gdf['Intensity'] = np.nan
+gdf['Hue'] = np.nan
+gdf['Saturation'] = np.nan
+
+
+# Iterate through polygon features
+for index, row in gdf.iterrows():
+    geometry = row['geometry']
+
+    # Calculate GLCM features on each channel for the current polygon
+    for i, channel in enumerate(channels):
+        contrast, dissimilarity, homogeneity, energy, correlation, ASM = calculate_glcm_for_polygon(raster_stack[i], geometry)
+        
+        # Update the corresponding rows in the shapefile
+        gdf.at[index, f'cont_{channel}'] = contrast
+        gdf.at[index, f'dissim_{channel}'] = dissimilarity
+        gdf.at[index, f'homog_{channel}'] = homogeneity
+        gdf.at[index, f'energy_{channel}'] = energy
+        gdf.at[index, f'correl_{channel}'] = correlation
+        gdf.at[index, f'ASM_{channel}'] = ASM
+
+    # Calculate average RGB values for the current polygon
+    red, green, blue, GRRI, GBRI, RBRI, NGRDI, NGBDI, NRBDI, MGRVI, RGBVI, GLI, VARI, VEG, Intensity, Hue, Saturation = calculate_average_rgb_for_polygon(raster_path, geometry)
+
+    # Update the corresponding rows in the shapefile
+    gdf.at[index, 'Red avg'] = red
+    gdf.at[index, 'Green avg'] = green
+    gdf.at[index, 'Blue avg'] = blue
+    gdf.at[index, 'GRRI'] = GRRI
+    gdf.at[index, 'GBRI'] = GBRI
+    gdf.at[index, 'RBRI'] = RBRI
+    gdf.at[index, 'NGRDI'] = NGRDI
+    gdf.at[index, 'NGBDI'] = NGBDI
+    gdf.at[index, 'NRBDI'] = NRBDI
+    gdf.at[index, 'MGRVI'] = MGRVI
+    gdf.at[index, 'RGBVI'] = RGBVI
+    gdf.at[index, 'GLI'] = GLI
+    gdf.at[index, 'VARI'] = VARI
+    gdf.at[index, 'VEG'] = VEG
+    gdf.at[index, 'Intensity'] = Intensity
+    gdf.at[index, 'Hue'] = Hue
+    gdf.at[index, 'Saturation'] = Saturation
+    
+# Close the raster files
+red_raster.close()
+green_raster.close()
+blue_raster.close()
+greyscale_raster.close()
+
+# Now delete the files
+os.remove('R_band.tif')
+os.remove('G_band.tif')
+os.remove('B_band.tif')
+os.remove('greyscale.tif')
+
+
+# Save the updated shapefile
+output_shapefile_path = r"C:\Users\danph\OneDrive\Desktop\GEOM2073-Dissertation\Code\TrainingData\2024.04.07_FullSet\2021_Glengowie_TrainingData.shp"
+gdf.to_file(output_shapefile_path)
