@@ -1,0 +1,170 @@
+'''
+PCA built in
+
+The code first classifies the training data into four categories:
+    1. None: cover_STUS < 1%
+    2. Low: cover_STUS 1% - 10%
+    3. Med: cover_STUS 10% - 30%
+    4. High: cover_STUS >30%
+    
+A random forest classification is completed based on the classes above.
+
+'''
+import geopandas as gpd
+import os
+import pandas as pd
+import seaborn as sns
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import confusion_matrix, cohen_kappa_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+
+# Suppress warnings
+import warnings
+warnings.filterwarnings('ignore')
+
+# Set proj environment
+os.environ['PROJ_LIB'] = r"C:\Users\danph\anaconda3\envs\dp\Library\share\proj"
+os.environ['GDAL_DATA'] = r"C:\Users\danph\anaconda3\envs\dp\Library\share"
+
+def read_training_data(shapefile_path, bins, labels):
+    train_tbl = gpd.read_file(shapefile_path)
+    train_tbl['Cover_STUS_Category'] = pd.cut(train_tbl['cover_STUS'], bins=bins, labels=labels, right=False)
+    return train_tbl
+
+def get_performance_metrics(y_true, y_pred):
+    conf_matrix = confusion_matrix(y_true, y_pred, labels=labels)
+    
+    # True Positives
+    TP = np.diag(conf_matrix)
+
+    # False Positives
+    FP = np.sum(conf_matrix, axis=0) - TP
+
+    # False Negatives
+    FN = np.sum(conf_matrix, axis=1) - TP
+
+    # True Negatives
+    TN = np.sum(conf_matrix) - (TP + FP + FN)
+
+    # True Positive Rate (Recall)
+    TPR = TP / (TP + FN)
+
+    # False Positive Rate
+    FPR = FP / (FP + TN)
+
+    # Precision
+    precision = TP / (TP + FP)
+
+    # F1 Score
+    F1 = (2 * precision * TPR) / (precision + TPR)
+    
+    # Overall Accuracy
+    overall_accuracy = (np.sum(TP)) / np.sum(conf_matrix)
+    
+    # Kappa score
+    kappa = cohen_kappa_score(y_true, y_pred)
+
+    return TPR, FPR, precision, F1, overall_accuracy, kappa
+
+# Define constants
+shapefile_path = r"C:\Users\danph\OneDrive\Desktop\GEOM2073-Dissertation\Code\TrainingData\2024.04.07_FullSet\FullSet_TrainingData_0704.shp"
+bins = [0, 0.01, 10, 30, float('inf')]
+labels = ['None', 'Low', 'Medium', 'High']
+n_estimators = 100
+max_depth = 10
+min_samples_leaf = 2
+min_samples_split = 10
+random_state = 0
+test_size = 0.2
+n_components = 13  # Number of PCA components
+
+# Read training data
+train_tbl = read_training_data(shapefile_path, bins, labels)
+
+# Define features and target
+haralick_features = ['cont', 'dissim', 'homog', 'energy', 'ASM', 'correl']
+channels = ['R', 'G', 'B', 'P']
+texture_features = [f'{f}_{c}' for f in haralick_features for c in channels]
+rgb_features = ['Red avg', 'Green avg', 'Blue avg']
+rgbIndices_features = ['GRRI', 'GBRI', 'RBRI', 'NGRDI', 'NGBDI', 'NRBDI','MGRVI', 'RGBVI', 'GLI', 'VARI', 'VEG', 'Hue', 'Intensity', 'Saturation']
+all_features = texture_features + rgb_features + rgbIndices_features
+RGB_RGBindices_features = rgb_features + rgbIndices_features
+target_feature = 'Cover_STUS_Category'
+
+# Split data into train and test sets
+X_train, X_test, y_train, y_test = train_test_split(train_tbl[all_features], train_tbl[target_feature], test_size=test_size, random_state=random_state)
+
+# Perform PCA
+
+# Define scaler
+scaler = StandardScaler()
+# Scale the training and target data
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+pca = PCA(n_components=n_components)
+X_train_pca = pca.fit_transform(X_train_scaled)
+X_test_pca = pca.transform(X_test_scaled)
+
+# Train random forest classifier
+classifier = RandomForestClassifier(n_estimators=n_estimators, 
+                                    max_depth = max_depth, 
+                                    min_samples_leaf = min_samples_leaf,
+                                    min_samples_split = min_samples_split,
+                                    oob_score=True, 
+                                    random_state=random_state)
+classifier.fit(X_train_pca, y_train)
+
+# Make predictions
+predictions = classifier.predict(X_test_pca)
+
+# Add predictions to table
+train_tbl.loc[X_test.index, 'Predictions'] = predictions
+
+# Calculate performance metrics
+TPR, FPR, precision, F1_score, overall_accuracy, kappa = get_performance_metrics(y_test, predictions)
+
+# Define STUS cover ranges for each category
+stus_cover_ranges = {
+    'None': '0%',
+    'Low': '0-10%',
+    'Medium': '10-30%',
+    'High': '>30%'
+}
+
+# Calculate performance metrics
+performance_metrics = {
+    'Category': labels,
+    'STUS Cover': [stus_cover_ranges[category] for category in labels],  # Add STUS cover column
+    'True Positive Rate (TPR)': TPR,
+    'False Positive Rate (FPR)': FPR,
+    'Precision': precision,
+    'F1-score': F1_score
+}
+
+# Create a DataFrame
+metrics_df = pd.DataFrame(performance_metrics)
+
+# Add overall accuracy and kappa score
+metrics_df['Overall Accuracy'] = overall_accuracy
+metrics_df['Kappa Score'] = kappa
+
+# Reorder columns
+metrics_df = metrics_df[['Category', 'STUS Cover', 'True Positive Rate (TPR)', 'False Positive Rate (FPR)', 'Precision', 'F1-score', 'Overall Accuracy', 'Kappa Score']]
+
+# Output the DataFrame
+print(metrics_df)
+
+# Export DataFrame to Excel
+metrics_df.to_excel('performance_metrics.xlsx', index=False)
+
+# Display the confusion matrix using seaborn heatmap
+sns.heatmap(confusion_matrix(y_test, predictions, labels=labels), annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.title('Confusion Matrix')
+plt.show()
